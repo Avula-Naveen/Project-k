@@ -29,6 +29,9 @@ const GeminiLiveStage = ({ resumeFile, onRestart }) => {
   const mediaRecorderRef = useRef(null);
   const isRecordingRef = useRef(false);
   const hasConnectedRef = useRef(false);
+  const silenceTimeoutRef = useRef(null);
+  const lastUserSpeechTimeRef = useRef(null);
+  const hasPromptedForSilenceRef = useRef(false);
 
   // ========== HELPERS ==========
   const normalizeText = (t) =>
@@ -67,7 +70,11 @@ const GeminiLiveStage = ({ resumeFile, onRestart }) => {
       cameraStreamRef.current = stream;
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
-        await localVideoRef.current.play().catch(() => {});
+        // ✅ CHANGE THIS LINE - Add proper error logging
+        await localVideoRef.current.play().catch((err) => {
+          console.error('Video play error:', err);
+          setCameraError('Video play failed: ' + err.message);
+        });
       }
       setIsCameraOn(true);
     } catch (err) {
@@ -246,8 +253,58 @@ const GeminiLiveStage = ({ resumeFile, onRestart }) => {
     }
   };
 
+  // ========== SILENCE DETECTION ==========
+  const clearSilenceTimeout = () => {
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
+  };
+
+  const promptUserForResponse = () => {
+    if (hasPromptedForSilenceRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    hasPromptedForSilenceRef.current = true;
+    try {
+      wsRef.current.send(JSON.stringify({
+        client_content: {
+          turns: [{ 
+            role: 'user', 
+            parts: [{ text: 'The candidate has not responded for a while. Please ask them: "Are you thinking about this, or should we move to the next question?" Keep it brief and natural.' }] 
+          }],
+          turn_complete: true,
+        },
+      }));
+    } catch (err) {
+      console.error('Silence prompt error:', err);
+    }
+  };
+
+  const startSilenceDetection = () => {
+    clearSilenceTimeout();
+    hasPromptedForSilenceRef.current = false;
+    
+    // Start timer for 4.5 seconds (between 4-5 seconds)
+    silenceTimeoutRef.current = setTimeout(() => {
+      promptUserForResponse();
+    }, 4500);
+  };
+
+  const handleUserSpeech = () => {
+    // User is speaking, clear silence detection
+    clearSilenceTimeout();
+    hasPromptedForSilenceRef.current = false;
+    lastUserSpeechTimeRef.current = Date.now();
+  };
+
   const handleServerResponse = async (serverContent) => {
     if (serverContent?.modelTurn?.parts) {
+      // AI is speaking, clear silence detection
+      clearSilenceTimeout();
+      hasPromptedForSilenceRef.current = false;
+      
       for (const part of serverContent.modelTurn.parts) {
         if (part?.inlineData?.data && part?.inlineData?.mimeType?.startsWith('audio/pcm')) {
           await playStreamingChunk(part.inlineData.data, part.inlineData.mimeType);
@@ -259,6 +316,7 @@ const GeminiLiveStage = ({ resumeFile, onRestart }) => {
       audioBufferQueueRef.current = [];
       isPlaybackStartedRef.current = false;
       stopPlaybackContext();
+      clearSilenceTimeout();
     }
 
     if (serverContent?.turnComplete) {
@@ -270,7 +328,13 @@ const GeminiLiveStage = ({ resumeFile, onRestart }) => {
         }
         flushAudioQueue();
       }
-      setTimeout(() => { isPlaybackStartedRef.current = false; }, 100);
+      
+      // Wait for audio to finish playing, then start silence detection
+      setTimeout(() => { 
+        isPlaybackStartedRef.current = false;
+        // Start silence detection after AI finishes speaking
+        startSilenceDetection();
+      }, 100);
     }
   };
 
@@ -289,6 +353,7 @@ const GeminiLiveStage = ({ resumeFile, onRestart }) => {
       if (wsRef.current) wsRef.current.close();
       stopRecording();
       stopPlaybackContext();
+      clearSilenceTimeout();
     };
   }, [resumeStatus]);
 
@@ -346,12 +411,92 @@ INTERVIEW FLOW:
    - Thank them and ask if they have questions
    - Keep it brief
 
+INTERVIEW ENDING AND FEEDBACK:
+
+   - If the candidate says they want to end the interview or session (phrases like):
+     * "Ok, we can end the session"
+     * "End the interview"
+     * "Let's end here"
+     * "I think we're done"
+     * "Can we wrap up?"
+   
+     You MUST respond like a real interviewer would:
+     - First, say something like: "Sure, that sounds good. Before we wrap up, do you have any questions for me?"
+     - Wait for their response
+     - If they have questions, answer them professionally
+     - If they don't have questions, thank them and end gracefully
+   
+   - If the candidate asks for FEEDBACK on their performance:
+     * "How did I do?"
+     * "Can you give me feedback?"
+     * "Where do I need to improve?"
+     * "What are my strengths and weaknesses?"
+     * "How was my performance?"
+   
+     You SHOULD provide constructive, honest feedback:
+     - Highlight what they did well (be specific about their answers)
+     - Point out areas for improvement (be constructive, not harsh)
+     - Give actionable suggestions
+     - Be encouraging but honest
+     - Base feedback on their actual answers during the interview
+     - This is DIFFERENT from explaining concepts - feedback is about their performance, which is appropriate
+
+STRICT INTERVIEW MODE (HARD RULES — NO EXCEPTIONS):
+
+   - This is a MOCK INTERVIEW, NOT a teaching session or tutorial.
+   - NEVER explain concepts, definitions, technologies, frameworks, languages, or any technical topics.
+   - If the candidate asks questions like:
+     * "What is React?" / "What is React.js?"
+     * "Explain Java" / "What is Java?"
+     * "What is Python?" / "Can you explain Python?"
+     * "What is JavaScript?" / "Tell me about JavaScript"
+     * "What is [ANY TECHNOLOGY/CONCEPT]?"
+     * "Can you teach me X?" / "Explain X to me"
+     * "How does X work?" (when asking for explanations)
+   
+     You MUST politely refuse immediately and say something like:
+     "Since this is an interview, I can't explain concepts or technologies. Please answer based on your understanding, or we can move to the next question."
+   
+   - Do NOT provide examples, definitions, tutorials, or hints that teach fundamentals.
+   - Do NOT explain how technologies work, what they are, or their features.
+   - You may ONLY ask interview-style questions or ask for clarifications about their experience.
+   - If the candidate insists on explanations, politely refuse once more and immediately move to the next question.
+   - Your role is to ASSESS knowledge, not to TEACH or EXPLAIN.
+   
+   IMPORTANT EXCEPTION - FEEDBACK IS ALLOWED:
+   - When the candidate asks for FEEDBACK on their performance (not asking to explain concepts), you SHOULD provide it.
+   - Performance feedback is different from explaining concepts - it's about evaluating their answers, which is appropriate for an interviewer.
+   - You can give feedback on: their technical answers, problem-solving approach, communication, areas of strength, areas to improve.
+
+
+   SILENCE AND NON-RESPONSE HANDLING (CRITICAL):
+
+   - If the candidate does not respond for 5-10 seconds or gives no clear answer:
+     - DO NOT repeat the same question.
+     - DO NOT ask "Did you hear me?" or "Can you answer?"
+     - Instead, gently prompt with ONE of these:
+       * "Take your time — are you thinking about this, or should we move to the next question?"
+       * "No worries if you're not sure. Are you thinking, or can we move on?"
+       * "Feel free to take a moment. Should we continue with the next question?"
+   
+   - If there is still no response after your prompt (another 5-10 seconds):
+     - Say something like:
+       * "No worries. Let's move to the next question."
+       * "That's okay. Let's continue with something else."
+     - Then immediately move to the next question.
+   
+   - NEVER keep repeating the same question multiple times.
+   - NEVER pressure or rush aggressively.
+   - NEVER ask "Why aren't you answering?" or similar confrontational questions.
+   - Keep it natural, understanding, and human-like.
+   - If the candidate seems stuck, offer to move on rather than waiting indefinitely.
+   
+   
 RULES:
 - Stay focused on the interview—politely redirect off-topic questions
 - Don't ask for sensitive personal data
 - If they ask unrelated things (cooking, travel, etc.), say: "Let's keep this focused on the interview. Back to your experience..."
 - Sound human—use natural pauses, don't enumerate things robotically
-- Dont explain about any concepts if user asks you like what is java, python etc.. , just notify them this is an interview am not sasoped to tell this 
 - Do not speak any other language other than english, even if they ask you just say we can only discuss in english
 ${resumeFile && resumeStatus === 'ready' ? `
 RESUME CONTEXT:
@@ -429,6 +574,7 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
       setIsRecording(false);
       isRecordingRef.current = false;
       stopPlaybackContext();
+      clearSilenceTimeout();
       if (audioContextRef.current) {
         try { audioContextRef.current.close(); } catch (_) {}
         audioContextRef.current = null;
@@ -462,6 +608,17 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
         if (!isRecordingRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
         const inputData = e.inputBuffer.getChannelData(0);
+        
+        // Detect if user is speaking (check audio volume)
+        const volume = Math.sqrt(
+          inputData.reduce((sum, sample) => sum + sample * sample, 0) / inputData.length
+        );
+        const speechThreshold = 0.01; // Adjust this threshold as needed
+        
+        if (volume > speechThreshold) {
+          handleUserSpeech();
+        }
+        
         const pcmData = convertFloat32ToInt16(inputData);
         const base64Data = arrayBufferToBase64(pcmData.buffer);
 
@@ -503,6 +660,7 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
 
     setIsRecording(false);
     isRecordingRef.current = false;
+    clearSilenceTimeout();
 
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       try {
@@ -533,6 +691,7 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
     stopRecording();
     stopPlaybackContext();
     stopCamera();
+    clearSilenceTimeout();
     hasConnectedRef.current = false;
     onRestart();
   };

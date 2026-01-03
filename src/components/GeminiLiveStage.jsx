@@ -26,6 +26,7 @@ const GeminiLiveStage = ({ resumeFile, onRestart }) => {
   const aiVideoRef = useRef(null);
   const localVideoRef = useRef(null);
   const cameraStreamRef = useRef(null);
+  const videoPlayPromiseRef = useRef(null);
 
   // Playback (AI audio)
   const playbackContextRef = useRef(null);
@@ -121,22 +122,9 @@ const GeminiLiveStage = ({ resumeFile, onRestart }) => {
         audio: false,
       });
       cameraStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-        try {
-          await localVideoRef.current.play();
-          setIsCameraOn(true);
-        } catch (err) {
-          console.error('Video play error:', err);
-          setCameraError('Video play failed: ' + err.message);
-          setIsCameraOn(false);
-          // Stop the stream if video can't play
-          stream.getTracks().forEach((t) => t.stop());
-          cameraStreamRef.current = null;
-        }
-      } else {
-        setIsCameraOn(true);
-      }
+      setIsCameraOn(true);
+      // Attach stream to video element when it's available
+      attachStreamToVideo(stream);
     } catch (err) {
       console.error('Camera error:', err);
       setCameraError('Camera unavailable');
@@ -144,17 +132,125 @@ const GeminiLiveStage = ({ resumeFile, onRestart }) => {
     }
   };
 
+  const attachStreamToVideo = async (stream) => {
+    // Wait for video element to be available
+    const maxRetries = 10;
+    let retries = 0;
+    
+    const tryAttach = async () => {
+      if (localVideoRef.current && stream) {
+        try {
+          const video = localVideoRef.current;
+          
+          // Cancel any pending play() operation
+          if (videoPlayPromiseRef.current) {
+            try {
+              await videoPlayPromiseRef.current;
+            } catch (e) {
+              // Ignore AbortError from previous play() call
+            }
+            videoPlayPromiseRef.current = null;
+          }
+          
+          // Only set srcObject if it's different
+          if (video.srcObject !== stream) {
+            video.srcObject = stream;
+          }
+          
+          // Only play if video is not already playing or ready
+          if (video.paused || video.readyState === 0) {
+            // Start play() and store the promise
+            videoPlayPromiseRef.current = video.play();
+            await videoPlayPromiseRef.current;
+            videoPlayPromiseRef.current = null;
+          }
+        } catch (err) {
+          videoPlayPromiseRef.current = null;
+          // Ignore AbortError - it's normal when play() is interrupted
+          if (err.name !== 'AbortError') {
+            console.error('Video play error:', err);
+            setCameraError('Video play failed: ' + err.message);
+            setIsCameraOn(false);
+            stream.getTracks().forEach((t) => t.stop());
+            cameraStreamRef.current = null;
+          }
+        }
+      } else if (retries < maxRetries) {
+        retries++;
+        setTimeout(tryAttach, 100);
+      }
+    };
+    
+    tryAttach();
+  };
+
   const stopCamera = () => {
+    // Cancel any pending play() operation
+    if (videoPlayPromiseRef.current) {
+      videoPlayPromiseRef.current.catch(() => {
+        // Ignore AbortError
+      });
+      videoPlayPromiseRef.current = null;
+    }
+    
     if (cameraStreamRef.current) {
       cameraStreamRef.current.getTracks().forEach((t) => t.stop());
       cameraStreamRef.current = null;
     }
-    if (localVideoRef.current) localVideoRef.current.srcObject = null;
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
+    }
     setIsCameraOn(false);
   };
 
+  // Effect to attach stream when video ref becomes available (fallback for when ref is ready after stream)
   useEffect(() => {
-    startCamera();
+    if (localVideoRef.current && cameraStreamRef.current && isCameraOn) {
+      const video = localVideoRef.current;
+      const stream = cameraStreamRef.current;
+      
+      // Only update if srcObject is different
+      if (video.srcObject !== stream) {
+        // Cancel any pending play() operation
+        if (videoPlayPromiseRef.current) {
+          videoPlayPromiseRef.current.catch(() => {
+            // Ignore AbortError
+          });
+          videoPlayPromiseRef.current = null;
+        }
+        
+        video.srcObject = stream;
+        
+        // Only play if video is paused or not ready
+        if (video.paused || video.readyState === 0) {
+          // Start play() and store the promise
+          videoPlayPromiseRef.current = video.play();
+          videoPlayPromiseRef.current.catch((err) => {
+            videoPlayPromiseRef.current = null;
+            // Ignore AbortError - it's normal when play() is interrupted
+            if (err.name !== 'AbortError') {
+              console.error('Video play error in effect:', err);
+            }
+          });
+        }
+      }
+    }
+    
+    // Cleanup: cancel pending play() on unmount or when dependencies change
+    return () => {
+      if (videoPlayPromiseRef.current) {
+        videoPlayPromiseRef.current.catch(() => {
+          // Ignore AbortError
+        });
+        videoPlayPromiseRef.current = null;
+      }
+    };
+  }, [isCameraOn]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      startCamera();
+    }
     return () => stopCamera();
   }, []);
 
@@ -649,7 +745,7 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
           generation_config: {
             response_modalities: ['AUDIO'],
             speech_config: {
-              voice_config: { prebuilt_voice_config: { voice_name: 'Kore' } },
+              voice_config: { prebuilt_voice_config: { voice_name: 'Puck' } },
             },
           },
           system_instruction: { parts: [{ text: systemInstruction }] },
@@ -948,15 +1044,15 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
           <div className="relative aspect-video rounded-xl bg-[#10192c] overflow-hidden flex items-center justify-center">
             <div className="absolute top-3 left-3 text-sm text-gray-200 font-medium z-10">You</div>
 
-            {isCameraOn ? (
-              <video
-                ref={localVideoRef}
-                className="h-full w-full object-cover scale-x-[-1]"
-                muted
-                playsInline
-                autoPlay
-              />
-            ) : (
+            <video
+              ref={localVideoRef}
+              className={`h-full w-full object-cover scale-x-[-1] ${isCameraOn ? 'block' : 'hidden'}`}
+              muted
+              playsInline
+              autoPlay
+            />
+
+            {!isCameraOn && (
               <div className="h-20 w-20 rounded-full bg-gray-800 flex items-center justify-center text-4xl">
                 👤
               </div>
@@ -977,20 +1073,20 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
 
           {/* AI */}
           <div className="relative aspect-video rounded-xl bg-[#10192c] overflow-hidden">
-            {!isAISpeaking && (
-              <img src="/female-05-img.png" alt="AI Avatar" className="h-full w-full object-cover" />
-            )}
+            <img 
+              src="/male-01-img.png" 
+              alt="AI Avatar" 
+              className={`absolute inset-0 h-full w-full object-cover object-center ${isAISpeaking ? 'opacity-0' : 'opacity-100'} transition-opacity duration-200`}
+            />
 
-            {isAISpeaking && (
-              <video
-                ref={aiVideoRef}
-                src="/female-05.mp4"
-                className="h-full w-full object-cover"
-                loop
-                muted
-                playsInline
-              />
-            )}
+            <video
+              ref={aiVideoRef}
+              src="/male-01.mp4"
+              className={`absolute inset-0 h-full w-full object-cover object-center ${isAISpeaking ? 'opacity-100' : 'opacity-0'} transition-opacity duration-200`}
+              loop
+              muted
+              playsInline
+            />
 
             <div className="absolute top-3 left-3 text-sm text-gray-200 font-medium z-10">Aarav (AI)</div>
 

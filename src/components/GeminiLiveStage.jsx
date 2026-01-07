@@ -4,7 +4,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 
-const GeminiLiveStage = ({ resumeFile, onRestart }) => {
+const GeminiLiveStage = ({ resumeFile, onRestart, onEndInterview }) => {
   const [isRecording, setIsRecording] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
@@ -40,6 +40,7 @@ const GeminiLiveStage = ({ resumeFile, onRestart }) => {
 
   // Connection guard
   const hasConnectedRef = useRef(false);
+  const interviewEndingRef = useRef(false);
 
   // Silence handling
   const silenceTimeoutRef = useRef(null);
@@ -122,10 +123,10 @@ const GeminiLiveStage = ({ resumeFile, onRestart }) => {
         audio: false,
       });
       cameraStreamRef.current = stream;
-      setIsCameraOn(true);
+          setIsCameraOn(true);
       // Attach stream to video element when it's available
       attachStreamToVideo(stream);
-    } catch (err) {
+        } catch (err) {
       console.error('Camera error:', err);
       setCameraError('Camera unavailable');
       setIsCameraOn(false);
@@ -168,12 +169,12 @@ const GeminiLiveStage = ({ resumeFile, onRestart }) => {
           videoPlayPromiseRef.current = null;
           // Ignore AbortError - it's normal when play() is interrupted
           if (err.name !== 'AbortError') {
-            console.error('Video play error:', err);
-            setCameraError('Video play failed: ' + err.message);
-            setIsCameraOn(false);
-            stream.getTracks().forEach((t) => t.stop());
-            cameraStreamRef.current = null;
-          }
+          console.error('Video play error:', err);
+          setCameraError('Video play failed: ' + err.message);
+          setIsCameraOn(false);
+          stream.getTracks().forEach((t) => t.stop());
+          cameraStreamRef.current = null;
+        }
         }
       } else if (retries < maxRetries) {
         retries++;
@@ -249,7 +250,7 @@ const GeminiLiveStage = ({ resumeFile, onRestart }) => {
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      startCamera();
+    startCamera();
     }
     return () => stopCamera();
   }, []);
@@ -561,6 +562,11 @@ const GeminiLiveStage = ({ resumeFile, onRestart }) => {
   };
 
   const handleServerResponse = async (serverContent) => {
+    // Don't process responses if interview is ending
+  if (interviewEndingRef.current) {
+    return;
+  }
+
     if (serverContent?.modelTurn?.parts) {
       // AI started responding => cancel silence timers
       clearSilenceTimeout();
@@ -640,7 +646,7 @@ const GeminiLiveStage = ({ resumeFile, onRestart }) => {
     wsRef.current.onopen = () => {
       setIsConnected(true);
 
-      let systemInstruction = `You are Aarav, a senior technical interviewer having a natural voice conversation with a candidate. Be warm, professional, and conversational—like a real human interviewer would be.
+let systemInstruction = `You are Aarav, a senior technical interviewer having a natural voice conversation with a candidate. Be warm, professional, and conversational—like a real human interviewer would be.
 
 VOICE STYLE:
 - Speak naturally in English with Indian accent
@@ -649,95 +655,123 @@ VOICE STYLE:
 - Ask ONE question at a time
 - Don't sound robotic or formal—be friendly but professional
 
-INTERVIEW FLOW:
-1. Brief greeting (15-20 seconds)
-   ${resumeFile && resumeStatus === 'ready'
-        ? `- Say hi and mention you've reviewed their resume
+INTERVIEW FLOW (STRICT STRUCTURE):
+1. Brief greeting (15-20 seconds)${resumeFile && resumeStatus === 'ready'
+        ? `
+   - Say hi and mention you've reviewed their resume
    - Ask them to briefly walk through their background (60 seconds)`
-        : `- Say hi and ask them to introduce themselves
+        : `
+   - Say hi and ask them to introduce themselves
    - Get their name, current role, experience level, and main tech stack`}
 
-2. Deep dive into experience (main section)
-   - Pick their strongest recent project or role
-   - Ask about: technical decisions, challenges, trade-offs, impact
-   - Follow up based on their answers (not generic questions)
-   - Examples: "Why that approach?", "What would you change?", "How did you debug it?"
+2. Technical Skills Coverage (MAIN SECTION - 8-10 minutes total)
+   - Identify 4-5 key technical areas from their background
+   - YOU MUST ROTATE through ALL these areas
+   - Spend MAXIMUM 2-3 minutes per skill area
+   - For EACH skill:
+     * Ask 1-2 targeted questions
+     * Ask about ONE specific project/challenge
+     * Then MOVE ON to next skill
+   
+   MANDATORY TRANSITIONS:
+   - After 2-3 questions on one topic, say: "Great! Now let's talk about your [NEXT_SKILL] experience..."
+   - Example rotation: React → Node.js → Databases → Cloud/DevOps → Testing
+   - Track progress: "We've covered frontend, let's discuss your backend work..."
 
-3. Technical questions (pick 3-4 relevant ones)
-   - Base questions on their actual experience
-   - Keep it practical and realistic
-
-4. Quick scenario (1-2 minutes)
-   - Give one real-world problem from their domain
-   - Ask how they'd approach it
-   - Ask questions based on his technical skills
-   - Do ask only related to one topic ask questions related to all user skills
-
-5. Wrap up
-   - Thank them and ask if they have questions
+3. Quick Problem-Solving Scenario (2 minutes)
+   - Pick ONE practical problem from their domain
+   - Focus on approach and reasoning
    - Keep it brief
 
-INTERVIEW ENDING AND FEEDBACK:
+4. Wrap up (1 minute)
+   - Thank them
+   - Ask if they have questions
+   - Keep it short
 
-   - If the candidate says they want to end the interview or session (phrases like):
-     * "Ok, we can end the session"
-     * "End the interview"
-     * "Let's end here"
-     * "I think we're done"
-     * "Can we wrap up?"
+CRITICAL SKILL COVERAGE RULES (ABSOLUTE REQUIREMENTS):
+-  MUST cover at least 3-4 different technical skills during interview
+-  MUST spend NO MORE than 3 minutes on any single technology
+-  MUST transition explicitly between topics
+-  NEVER ask 4+ questions about the same project
+-  NEVER stay on one technology for more than 3-4 minutes
+-  NEVER say "tell me more about that project" more than once
 
-     You MUST respond like a real interviewer would:
-     - First, say something like: "Sure, that sounds good. Before we wrap up, do you have any questions for me?"
-     - Wait for their response
-     - If they have questions, answer them professionally
-     - If they don't have questions, thank them and end gracefully
+SKILL ROTATION TRACKING:
+After each 2-3 questions, ask yourself:
+- "Have I covered their frontend skills yet?"
+- "Have I asked about backend/databases?"
+- "Have I discussed their cloud/DevOps experience?"
+- "Am I repeating questions about the same project?"
+If NO to coverage questions, or YES to the last one → SWITCH TOPICS IMMEDIATELY
 
-   - If the candidate asks for FEEDBACK on their performance:
-     * "How did I do?"
-     * "Can you give me feedback?"
-     * "Where do I need to improve?"
-     * "What are my strengths and weaknesses?"
-     * "How was my performance?"
+INTERVIEW ENDING (CRITICAL - STRICT RULES):
 
-     You SHOULD provide constructive, honest feedback:
-     - Highlight what they did well (be specific about their answers)
-     - Point out areas for improvement (be constructive, not harsh)
-     - Give actionable suggestions
-     - Be encouraging but honest
-     - Base feedback on their actual answers during the interview
+When candidate says ANY of these phrases:
+- "End the interview" / "End the session"
+- "Let's wrap up" / "Let's end here"
+- "I think we're done" / "Can we finish?"
+- "That's all" / "I'm good"
 
-STRICT INTERVIEW MODE (HARD RULES — NO EXCEPTIONS):
+YOU MUST:
+1. IMMEDIATELY respond: "Sure, that sounds good. Do you have any questions for me?"
+2. STOP asking technical questions completely
+3. If they say "no" or "no questions":
+   - Say ONLY: "Thank you for your time today. Best of luck with your interviews!"
+   - DO NOT ask anything else
+4. If they ask questions, answer briefly, then say goodbye
 
-   - This is a MOCK INTERVIEW, NOT a teaching session or tutorial.
-   - NEVER explain concepts, definitions, technologies, frameworks, languages, or any technical topics.
-   - If the candidate asks for explanations, politely refuse and ask them to answer based on their understanding, or move to the next question.
-   - Your role is to ASSESS knowledge, not to TEACH.
+NEVER:
+- Ask new technical questions after they say "end"
+- Continue the interview after wrap-up signal
+- Ignore their request to end
+- Say "one more question" after they want to end
 
-SILENCE AND NON-RESPONSE HANDLING (CRITICAL):
+FEEDBACK PROVISION:
+When candidate asks for feedback:
+- "How did I do?" / "Can you give me feedback?"
+- "Where do I need to improve?" / "How was my performance?"
 
-   - If the candidate does not respond for 5-10 seconds or gives no clear answer:
-     - DO NOT repeat the same question.
-     - Instead, gently prompt: "Take your time — are you thinking about this, or should we move to the next question?"
-   - If there is still no response after your prompt:
-     - Say: "No worries. Let's move to the next question."
-     - Then immediately move on.
+Provide constructive feedback:
+- Highlight 2-3 specific strengths with examples
+- Point out 1-2 areas for improvement (be constructive)
+- Give actionable suggestions
+- Be encouraging but honest
+- Base feedback on their actual answers
+
+STRICT INTERVIEW MODE (NO TEACHING):
+- This is ASSESSMENT, not a tutorial
+- NEVER explain concepts, technologies, or frameworks
+- If asked for explanations, say: "Let's focus on what you already know. Can you answer based on your understanding?"
+- If they can't answer, move on: "No problem, let's try a different question."
+
+SILENCE HANDLING:
+- If candidate doesn't respond for 5-7 seconds:
+  - Say: "Take your time. Are you thinking about this, or should we move on?"
+- If still no response after your prompt:
+  - Say: "No worries, let's move to the next question."
+  - Immediately switch topics
 
 RULES:
-- Stay focused on the interview—politely redirect off-topic questions
+- Stay focused on the interview
 - Don't ask for sensitive personal data
-- You must ask questions related all user skills, do no just focus on one skill, ask questions in all the skills user mentioned
-- Only speak English. If asked to switch languages, politely refuse and continue in English.
+- Politely redirect off-topic questions
+- MUST cover multiple skills, not just one
+- Only speak English (politely refuse language switches)
 ${resumeFile && resumeStatus === 'ready'
         ? `
-RESUME CONTEXT:
-Here's their resume text. Use it to ask specific questions about their projects, technologies, and impact:
-
+RESUME CONTEXT & SKILL EXTRACTION:
 ${clipText(resumeText, 14000)}
 
-Reference specific items from their resume when asking questions.`
+INTERVIEW PLANNING:
+Based on the resume above:
+1. Identify 4-5 main technical skills/areas
+2. Plan to spend 2-3 minutes on EACH area
+3. Use explicit transitions between topics
+4. Reference specific resume items when asking questions
+5. Ensure balanced coverage of all major skills`
         : ''}
 
-Start naturally. If you have their resume, mention it. If not, ask them to introduce themselves. Keep it conversational.`;
+Start naturally. Greet them, then systematically cover their skills. Remember: ROTATE through topics, DON'T fixate on one area.`;
 
       const setupMessage = {
         setup: {
@@ -747,6 +781,14 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
             speech_config: {
               voice_config: { prebuilt_voice_config: { voice_name: 'Puck' } },
             },
+          },
+          realtime_input_config: { // <--- ADD THIS BLOCK
+            automatic_activity_detection: {
+              disabled: false, // Keep VAD enabled
+              // This is the key setting to lengthen the tolerable pause:
+              silence_duration_ms: 400, // INCREASE this from default (e.g., 300ms)
+              prefix_padding_ms: 100,
+            }
           },
           system_instruction: { parts: [{ text: systemInstruction }] },
           tools: [],
@@ -868,7 +910,7 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
         // Smooth & require consecutive frames to count as "speech"
         const threshold = 0.012; // tune if needed
         const requiredFrames = 3;
-        const bargeInThreshold = 0.025; // Higher threshold for interrupting AI
+        const bargeInThreshold = 0.018; // Higher threshold for interrupting AI
 
         if (rms > threshold) {
           speechFramesRef.current += 1;
@@ -890,6 +932,7 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
           // AI is speaking and user is not speaking loudly enough - don't send audio
           return;
         }
+
 
         // Resample to 24k for server
         const inRate = audioContextRef.current?.sampleRate || 48000;
@@ -971,23 +1014,78 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
     isCameraOn ? stopCamera() : startCamera();
   };
 
+  // const endInterview = () => {
+  //   // Stop recording first, then close WS
+  //   stopRecording();
+
+  //   try {
+  //     if (wsRef.current) wsRef.current.close();
+  //   } catch (_) {}
+
+  //   stopPlaybackContext();
+  //   stopCamera();
+  //   clearSilenceTimeout();
+  //   clearIdleCheckTimeout();
+
+  //   hasConnectedRef.current = false;
+  //   // Call onEndInterview if provided, otherwise fall back to onRestart
+  //   if (onEndInterview) {
+  //     onEndInterview();
+  //   } else {
+  //     onRestart();
+  //   }
+  // };
   const endInterview = () => {
-    // Stop recording first, then close WS
-    stopRecording();
-
-    try {
-      if (wsRef.current) wsRef.current.close();
-    } catch (_) {}
-
-    stopPlaybackContext();
-    stopCamera();
-    clearSilenceTimeout();
-    clearIdleCheckTimeout();
-
-    hasConnectedRef.current = false;
-    onRestart();
+    // Mark interview as ending to prevent further processing
+    interviewEndingRef.current = true;
+  
+    // Send explicit end signal to AI before cleanup
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(
+          JSON.stringify({
+            client_content: {
+              turns: [
+                {
+                  role: 'user',
+                  parts: [{ 
+                    text: 'SYSTEM: Interview session ended by candidate. Do not ask any more questions. Say a brief goodbye only.' 
+                  }]
+                }
+              ],
+              turn_complete: true,
+            },
+          })
+        );
+      } catch (err) {
+        console.error('End signal error:', err);
+      }
+    }
+  
+    // Delay cleanup slightly to allow goodbye message to send
+    setTimeout(() => {
+      stopRecording();
+  
+      try {
+        if (wsRef.current) wsRef.current.close();
+      } catch (_) {}
+  
+      stopPlaybackContext();
+      stopCamera();
+      clearSilenceTimeout();
+      clearIdleCheckTimeout();
+  
+      hasConnectedRef.current = false;
+      interviewEndingRef.current = false;
+  
+      // Call onEndInterview if provided, otherwise fall back to onRestart
+      if (onEndInterview) {
+        onEndInterview();
+      } else {
+        onRestart();
+      }
+    }, 800);
   };
-
   // ========== UI ==========
   if (resumeStatus === 'processing') {
     return (
@@ -1002,7 +1100,7 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
   return (
     <div className="w-full max-w-6xl space-y-4">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-        <div className="text-sm text-gray-300">
+        <div className="text-sm text-gray-600 dark:text-gray-300">
           {resumeFile ? (
             resumeStatus === 'ready' ? (
               `Resume-based interview: ${resumeFile.name} ✓`
@@ -1013,17 +1111,17 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
             'General mock interview'
           )}
         </div>
-        <div className="flex items-center gap-3 text-sm text-gray-400">
-          <Link href="/" className="hover:text-white transition">
+        <div className="flex items-center gap-3 text-sm text-gray-600 dark:text-gray-400">
+          <Link href="/" className="hover:text-black dark:hover:text-white transition">
             Home
           </Link>
-          <button onClick={onRestart} className="hover:text-white transition">
+          <button onClick={onRestart} className="hover:text-black dark:hover:text-white transition">
             Restart
           </button>
         </div>
       </div>
 
-      <div className="bg-[#0b1220] border border-[#1a2336] rounded-2xl shadow-2xl p-4 space-y-4">
+      <div className="bg-white dark:bg-black border border-gray-300 dark:border-gray-700 rounded-2xl shadow-2xl p-4 space-y-4">
         {/* Error Message */}
         {errorMessage && (
           <div className="p-4 bg-red-500/10 border border-red-500/50 rounded-lg">
@@ -1041,19 +1139,19 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* YOU */}
-          <div className="relative aspect-video rounded-xl bg-[#10192c] overflow-hidden flex items-center justify-center">
-            <div className="absolute top-3 left-3 text-sm text-gray-200 font-medium z-10">You</div>
+          <div className="relative aspect-video rounded-xl bg-gray-200 dark:bg-gray-900 overflow-hidden flex items-center justify-center">
+            <div className="absolute top-3 left-3 text-sm text-gray-800 dark:text-gray-200 font-medium z-10">You</div>
 
-            <video
-              ref={localVideoRef}
+              <video
+                ref={localVideoRef}
               className={`h-full w-full object-cover scale-x-[-1] ${isCameraOn ? 'block' : 'hidden'}`}
-              muted
-              playsInline
-              autoPlay
-            />
+                muted
+                playsInline
+                autoPlay
+              />
 
             {!isCameraOn && (
-              <div className="h-20 w-20 rounded-full bg-gray-800 flex items-center justify-center text-4xl">
+              <div className="h-20 w-20 rounded-full bg-gray-400 dark:bg-gray-800 flex items-center justify-center text-4xl">
                 👤
               </div>
             )}
@@ -1072,26 +1170,26 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
           </div>
 
           {/* AI */}
-          <div className="relative aspect-video rounded-xl bg-[#10192c] overflow-hidden">
+          <div className="relative aspect-video rounded-xl bg-gray-200 dark:bg-gray-900 overflow-hidden">
             <img 
               src="/male-01-img.png" 
               alt="AI Avatar" 
               className={`absolute inset-0 h-full w-full object-cover object-center ${isAISpeaking ? 'opacity-0' : 'opacity-100'} transition-opacity duration-200`}
             />
 
-            <video
-              ref={aiVideoRef}
+              <video
+                ref={aiVideoRef}
               src="/male-01.mp4"
               className={`absolute inset-0 h-full w-full object-cover object-center ${isAISpeaking ? 'opacity-100' : 'opacity-0'} transition-opacity duration-200`}
-              loop
-              muted
-              playsInline
-            />
+                loop
+                muted
+                playsInline
+              />
 
-            <div className="absolute top-3 left-3 text-sm text-gray-200 font-medium z-10">Aarav (AI)</div>
+            <div className="absolute top-3 left-3 text-sm text-gray-800 dark:text-gray-200 font-medium z-10">Aarav (AI)</div>
 
             {isConnected && (
-              <div className="absolute bottom-3 right-3 text-xs text-white bg-black/60 px-3 py-1 rounded-full z-10">
+              <div className="absolute bottom-3 right-3 text-xs text-white dark:text-white bg-black/60 dark:bg-black/60 px-3 py-1 rounded-full z-10">
                 {isAISpeaking ? 'Speaking...' : 'Listening...'}
               </div>
             )}
@@ -1109,7 +1207,7 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
           <button
             onClick={toggleCamera}
             className={`rounded-full px-5 py-2 text-sm font-medium transition ${
-              isCameraOn ? 'bg-white text-black hover:bg-gray-200' : 'bg-gray-700 text-gray-200 hover:bg-gray-600'
+              isCameraOn ? 'bg-black dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200' : 'bg-gray-300 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-400 dark:hover:bg-gray-600'
             }`}
           >
             {isCameraOn ? ' Camera On' : ' Camera Off'}
@@ -1118,7 +1216,7 @@ Start naturally. If you have their resume, mention it. If not, ask them to intro
           <button
             onClick={toggleMute}
             className={`rounded-full px-5 py-2 text-sm font-medium transition ${
-              isMuted ? 'bg-red-500 text-white hover:bg-red-400' : 'bg-gray-700 text-gray-200 hover:bg-gray-600'
+              isMuted ? 'bg-red-500 text-white hover:bg-red-400' : 'bg-gray-300 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-400 dark:hover:bg-gray-600'
             }`}
           >
             {isMuted ? ' Muted' : ' Audio On'}
